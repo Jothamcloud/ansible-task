@@ -1,0 +1,148 @@
+- name: Automated Deployment and Configuration
+  hosts: hng
+  become: yes
+
+  vars:
+    postgres_user: postgres_admin
+    postgres_password: secure_password
+    app_directory: /opt/stage_5b
+    repo_url: https://github.com/hngprojects/hng_boilerplate_java_web.git
+    db_secret_file: /var/secrets/pg_pw.txt
+    nginx_conf: /etc/nginx/sites-available/stage_5b
+    nginx_link: /etc/nginx/sites-enabled/stage_5b
+    error_log: /var/log/stage_5b/error.log
+    out_log: /var/log/stage_5b/out.log
+    app_port: 3000
+    user: hng
+
+  tasks:
+    - name: Update and upgrade apt packages
+      apt:
+        update_cache: yes
+        upgrade: dist
+
+    - name: Create hng user with sudo privileges
+      user:
+        name: hng
+        state: present
+        groups: sudo
+        append: yes
+
+    - name: Create necessary directories
+      file:
+        path: "{{ item }}"
+        state: directory
+      with_items:
+        - /var/secrets
+        - /var/log/stage_5b
+
+    - name: Configure Git safe directory
+      command: git config --global --add safe.directory '*'
+
+    - name: Clone the repository as root
+      git:
+        repo: "{{ repo_url }}"
+        dest: "{{ app_directory }}"
+        version: devops
+        force: yes
+
+    - name: Change ownership of the app directory
+      file:
+        path: "{{ app_directory }}"
+        owner: "{{ user }}"
+        group: "{{ user }}"
+        recurse: yes
+
+    - name: Install dependencies
+      apt:
+        name:
+          - maven
+          - postgresql
+          - nginx
+          - rabbitmq-server
+          - openjdk-17-jdk
+        state: present
+
+    - name: Install Python pip
+      apt:
+        name: python3-pip
+        state: present
+
+    - name: Install psycopg2 library
+      pip:
+        name: psycopg2-binary
+
+    - name: Locate pg_hba.conf
+      command: |
+        find /etc/postgresql -name pg_hba.conf
+      register: pg_hba_location
+
+    - name: Update PostgreSQL authentication method to md5 for local connections
+      lineinfile:
+        path: "{{ pg_hba_location.stdout }}"
+        regexp: '^host\s+all\s+all\s+127.0.0.1/32\s+'
+        line: 'host    all             all             127.0.0.1/32            md5'
+
+    - name: Update PostgreSQL IPv6 authentication method to md5
+      lineinfile:
+        path: "{{ pg_hba_location.stdout }}"
+        regexp: '^host\s+all\s+all\s+::1/128\s+'
+        line: 'host    all             all             ::1/128                 md5'
+
+    - name: Restart PostgreSQL
+      service:
+        name: postgresql
+        state: restarted
+
+    - name: Set PostgreSQL password for user 'postgres'
+      become: yes
+      become_user: postgres
+      command: psql -c "ALTER USER postgres PASSWORD '{{ postgres_password }}';"
+      environment:
+        TMPDIR: "$HOME"
+
+    - name: Configure PostgreSQL database
+      become: yes
+      become_user: postgres
+      postgresql_db:
+        name: mydatabase
+        owner: postgres
+        state: present
+
+    - name: Build application
+      command: mvn clean package
+      args:
+        chdir: "{{ app_directory }}"
+      become: yes
+      become_user: "{{ user }}"
+
+    - name: Configure application service
+      template:
+        src: stage_5b.service.j2
+        dest: /etc/systemd/system/stage_5b.service
+
+    - name: Start and enable application service
+      systemd:
+        name: stage_5b
+        state: started
+        enabled: yes
+        daemon_reload: yes
+
+    - name: Create Nginx configuration file
+      template:
+        src: nginx_stage_5b.j2
+        dest: "{{ nginx_conf }}"
+      notify: Restart Nginx
+
+    - name: Enable Nginx configuration
+      file:
+        src: "{{ nginx_conf }}"
+        dest: "{{ nginx_link }}"
+        state: link
+      notify: Restart Nginx
+
+  handlers:
+    - name: Restart Nginx
+      service:
+        name: nginx
+        state: restarted
