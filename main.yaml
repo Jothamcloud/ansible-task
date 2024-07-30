@@ -3,17 +3,31 @@
   become: yes
 
   vars:
-    postgres_user: postgres_admin
+    postgres_user: postgres
     postgres_password: secure_password
+    postgres_db: mydatabase
+    postgres_port: 5432
+    postgres_host: localhost
     app_directory: /opt/stage_5b
     repo_url: https://github.com/hngprojects/hng_boilerplate_java_web.git
     db_secret_file: /var/secrets/pg_pw.txt
-    nginx_conf: /etc/nginx/sites-available/stage_5b
+    nginx_conf: /etc/nginx/conf.d/stage_5b
+    nginx_default: /etc/nginx/sites-enabled/default
     nginx_link: /etc/nginx/sites-enabled/stage_5b
     error_log: /var/log/stage_5b/error.log
     out_log: /var/log/stage_5b/out.log
     app_port: 3000
     user: hng
+    account_sid: djdafdsad
+    jwt_token: 123dfadkl
+    jwt_secret: asdfdasdf
+    sms_number: 123456790
+    auth_token: 12345ada
+    rabbitmq_host: localhost
+    rabbitmq_port: 5672
+    rabbitmq_user: rabbitter
+    rabbitmq_password: "scratch_thaT_11"
+    DB_CONNECTION_STRING: "postgresql://{{ postgres_host }}:{{ postgres_port }}/{{ postgres_db }}"
 
   tasks:
     - name: Update and upgrade apt packages
@@ -63,6 +77,23 @@
           - openjdk-17-jdk
         state: present
 
+
+    - name: add rabbitmq users admin
+      rabbitmq_user:
+        user: "{{ rabbitmq_user }}"
+        password: "{{ rabbitmq_password }}"
+        vhost: /
+        tags: administrator
+        configure_priv: .*
+        read_priv: .*
+        write_priv: .*
+        state: present
+
+    - name: remove default guest user
+      rabbitmq_user: 
+        user: guest
+        state: absent
+
     - name: Install Python pip
       apt:
         name: python3-pip
@@ -80,8 +111,8 @@
     - name: Update PostgreSQL authentication method to md5 for local connections
       lineinfile:
         path: "{{ pg_hba_location.stdout }}"
-        regexp: '^host\s+all\s+all\s+127.0.0.1/32\s+'
-        line: 'host    all             all             127.0.0.1/32            md5'
+        regexp: '^local\s+all\s+postgres\s+peer\s+'
+        line: 'local    all             postgres                       md5'
 
     - name: Update PostgreSQL IPv6 authentication method to md5
       lineinfile:
@@ -97,18 +128,147 @@
     - name: Set PostgreSQL password for user 'postgres'
       become: yes
       become_user: postgres
-      command: psql -c "ALTER USER postgres PASSWORD '{{ postgres_password }}';"
+      command: PGPASSWORD="{{ postgres_password }}" psql -c "ALTER USER {{ postgres_user }} PASSWORD '{{ postgres_password }}';"
       environment:
         TMPDIR: "$HOME"
 
     - name: Configure PostgreSQL database
       become: yes
-      become_user: postgres
+      become_user: "{{ postgres_user }}"
       postgresql_db:
-        name: mydatabase
-        owner: postgres
+        name: "{{ postgres_db }}"
+        owner: "{{ postgres_user }}"
+        login_password: "{{ postgres_password }}"
         state: present
 
+
+    - name: Ensure the .env file exists
+      ansible.builtin.file:
+        path: "{{ app_directory }}/.env"
+        state: touch
+        mode: '0644'
+
+    - name: Ensure the application.properties file exists
+      ansible.builtin.file:
+        path: "{{ app_directory }}/src/main/resources/application.properties"
+        state: touch
+        mode: '0644'
+
+    - name: Populate application.properties with credentials
+      ansible.builtin.lineinfile:
+        path: "{{ app_directory }}/.env"
+        line: "{{ item }}"
+        create: yes
+      loop:
+        - "DB_CONNECTION_STRING={{ DB_CONNECTION_STRING }}"
+        - "DB_USERNAME={{ postgres_user }}"
+        - "DB_PASSWORD={{ postgres_password }}"
+        - "RABBITMQ_HOST={{ rabbitmq_host }}"
+        - "RABBITMQ_PORT={{ rabbitmq_port }}"
+        - "RABBITMQ_USERNAME={{ rabbitmq_user }}"
+        - "RABBITMQ_PASSWORD={{ rabbitmq_password }}"
+        - "QUEUE_EMAIL=emailQueue"
+        - "JWT_SECRET={{ jwt_secret }}"
+        - "EXCHANGE_KEY=exchange_key"
+        - "ROUTING_KEY=routingkey"
+        - "ACCOUNT_SID=twilloei"
+        - "AUTH_TOKEN=twillioauthtoken"
+        - "SMS_NUMBER={{ sms_number }}"
+
+    - name: Populate flyway.conf with credentials
+      ansible.builtin.lineinfile:
+        path: "{{ app_directory }}/flyway.conf"
+        line: "{{ item }}"
+        create: yes
+      loop:
+        - "flyway.url=jdbc:postgresql://{{ postgres_host }}:{{ postgres_port }}/{{ postgres_db }}"
+        - "flyway.user={{ postgres_user }}"
+        - "flyway.password={{ postgres_password }}"
+        - "flyway.locations=classpath:db/migration"
+        - "flyway.baselineOnMigrate=true"
+        - "flyway.baselineVersion=1"
+
+    - name: Populate application.properties with credentials
+      ansible.builtin.lineinfile:
+        path: "{{ app_directory }}/src/main/resources/application.properties"
+        line: "{{ item }}"
+        create: yes
+      loop:
+        - "spring.application.name=hng-java-boilerplate"
+        - "server.port={{ app_port }}"
+        - "# datasource configuration"
+        - "spring.datasource.url=jdbc:{{ DB_CONNECTION_STRING }}"
+        - "spring.datasource.username={{ postgres_user }}"
+        - "spring.datasource.password={{ postgres_password }}"
+        - "spring.jpa.hibernate.ddl-auto=validate"
+        - "# migration configuration"
+        - "spring.flyway.enabled=true"
+        - "spring.flyway.baseline-on-migrate=true"
+        - "spring.flyway.location=classpath:db/migration"
+        - "spring.flyway.url=jdbc:{{ DB_CONNECTION_STRING }}"
+        - "spring.flyway.user={{ postgres_user }}"
+        - "spring.flyway.password={{ postgres_password }}"
+        - "spring.flyway.baseline-version=1"
+
+        - "#Database Connection pooling"
+        - "spring.datasource.hikari.minimum-idle=5"
+        - "spring.datasource.hikari.maximum-pool-size=20"
+        - "spring.datasource.hikari.idle-timeout=30000"
+        - "spring.datasource.hikari.pool-name=HikariCP"
+        - "spring.datasource.hikari.max-lifetime=1800000"
+        - "spring.datasource.hikari.connection-timeout=20000"
+        - "spring.datasource.hikari.leak-detection-threshold=15000"
+
+        - "#configures Spring Boot to throw an exception if no handler is found for a request"
+        - "spring.mvc.throw-exception-if-no-handler-found=true"
+        - "spring.web.resources.add-mappings=false"
+
+        - "#Logging"
+        - "spring.main.banner-mode=off"
+        - "logging.pattern.console = %green(%d{HH:mm:ss.SSS}) %blue(%-5level) %red([%thread]) %yellow(%logger{15})- %msg%n"
+
+        - "#Swagger doc"
+        - "springdoc.swagger-ui.path=/docs"
+        - "springdoc.api-docs.servers[0].url=https://api-java.boilerplate.hng.tech"
+        - "springdoc.api-docs.servers[0].description=Production Server"
+        - "springdoc.api-docs.servers[1].url=https://staging.api-java.boilerplate.hng.tech"
+        - "springdoc.api-docs.servers[1].description=Staging Server"
+        - "springdoc.api-docs.servers[2].url=https://deployment.api-java.boilerplate.hng.tech"
+        - "springdoc.api-docs.servers[2].description=Deployment Server"
+
+        - "# RabbitMQ configuration"
+        - "spring.rabbitmq.host={{ rabbitmq_host }}"
+        - "spring.rabbitmq.port={{ rabbitmq_port }}"
+        - "spring.rabbitmq.username={{ rabbitmq_user }}"
+        - "spring.rabbitmq.password={{ rabbitmq_password }}"
+        - "rabbitmq.queue.email=hng@gmail.com"
+        - "spring.rabbitmq.exchange.key=anything_works"
+        - "spring.rabbitmq.routing.key=anythong_works"
+
+        - "## twilio configuration"
+        - "spring.twilio.account.sid={{ account_sid }}"
+        - "spring.twilio.auth.token={{ auth_token }}"
+        - "spring.twilio.outgoing.sms.number={{ sms_number }}"
+
+        - "# email configuration"
+        - "spring.mail.host=smtp.gmail.com"
+
+        - "# JWT secret"
+        - "sha512.string={{ jwt_secret }}"
+
+        - "#Security configuration"
+        - "spring.security.oauth2.client.registration.google.client-id=nothing"
+        - "spring.security.oauth2.client.registration.google.client-secret=nothing"
+
+
+    - name: install dependencies
+      command: mvn dependency:resolve
+      args:
+        chdir: "{{ app_directory }}"
+      become: yes
+      become_user: "{{ user }}"
+
+    
     - name: Build application
       command: mvn clean package
       args:
@@ -127,19 +287,24 @@
         state: started
         enabled: yes
         daemon_reload: yes
+    
 
+    - name: remove default configuratin file
+      ansible.builtin.file:
+        path: "{{nginx_default}}"
+        state: absent
     - name: Create Nginx configuration file
       template:
         src: nginx_stage_5b.j2
         dest: "{{ nginx_conf }}"
       notify: Restart Nginx
 
-    - name: Enable Nginx configuration
-      file:
-        src: "{{ nginx_conf }}"
-        dest: "{{ nginx_link }}"
-        state: link
-      notify: Restart Nginx
+    # - name: Enable Nginx configuration
+    #   file:
+    #     src: "{{ nginx_conf }}"
+    #     dest: "{{ nginx_link }}"
+    #     state: link
+    #   notify: Restart Nginx
 
   handlers:
     - name: Restart Nginx
