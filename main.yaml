@@ -317,10 +317,11 @@
       ansible.builtin.file:
         path: "{{nginx_default}}"
         state: absent
+
     - name: Create Nginx configuration file
       template:
         src: nginx_stage_5b.j2
-        dest: "{{ nginx_conf }}"
+        dest: "{{ nginx_conf }}.conf"
       notify: Restart Nginx
 
     # - name: Enable Nginx configuration
